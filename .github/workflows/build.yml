@@ -1,0 +1,48 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip project
+        id: find
+        run: |
+          ZIP=$(ls ./*.zip 2>/dev/null | head -n1)
+          if [ -z "$ZIP" ]; then echo "No .zip in repo"; exit 1; fi
+          mkdir -p _project
+          unzip -q -o "$ZIP" -d _project
+          SETTINGS=$(find _project -name settings.gradle.kts | head -n1)
+          if [ -z "$SETTINGS" ]; then echo "settings.gradle.kts not found"; exit 1; fi
+          echo "dir=$(dirname "$SETTINGS")" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: 8.9 }
+      - name: Build release APK
+        working-directory: ${{ steps.find.outputs.dir }}
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle assembleRelease --no-daemon --console=plain 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+      - name: Error summary
+        if: failure()
+        run: |
+          { echo '## Build errors'; echo '```'; grep -nE "^e: |What went wrong|Execution failed|Could not|FAILED" build.log | head -40; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload full log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: build-log, path: build.log }
+      - name: Collect APK
+        run: cp "${{ steps.find.outputs.dir }}/app/build/outputs/apk/release/app-release.apk" Morrow.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: APK, path: Morrow.apk }
+      - name: Publish to Releases
+        uses: softprops/action-gh-release@v2
+        with: { tag_name: latest, name: Latest build, files: Morrow.apk }
